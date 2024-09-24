@@ -1,32 +1,19 @@
-{{- if .Values.backend.enabled }}
-apiVersion: v1
-kind: Service
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: backend-service
+  name: {{ .Values.frontend.name }}
 spec:
-  type: {{ .Values.service.type }}
+  replicas: {{ .Values.replicaCount }}
   selector:
-    app: {{ .Values.backend.name }}
-  ports:
-    - protocol: {{ .Values.backend.protocol }}
-      port: {{ .Values.backend.port }}
-      targetPort: {{ .Values.service.backendPort }}
----
-
-{{- end }}
-
-
-{{- if .Values.frontend.enabled }}
-apiVersion: v1
-kind: Service
-metadata:
-  name: frontend-service
-spec:
-  type: {{ .Values.service.type }}
-  selector:
-    app: {{ .Values.frontend.name }}
-  ports:
-    - protocol: {{ .Values.frontend.protocol }}
-      port: {{ .Values.frontend.port }}
-      targetPort: {{ .Values.service.frontendPort }}
----
+    matchLabels:
+      app: {{ .Values.frontend.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.frontend.name }}
+    spec:
+      containers:
+      - name: frontend
+        image: {{ .Values.frontend.image }}
+        ports:
+          - containerPort: {{ .Values.service.frontendPort }}
