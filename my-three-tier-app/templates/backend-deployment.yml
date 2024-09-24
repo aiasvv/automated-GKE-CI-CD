@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.backend.name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.backend.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.backend.name }}
+    spec:
+      containers:
+      - name: backend
+        image: {{ .Values.backend.image }}
+        env:
+        - name: PGHOST
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: PGHOST
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: PGUSER
+        - name: PGDATABASE
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: PGDATABASE
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-secret
+              key: PGPASSWORD
+        ports:
+          - containerPort: {{ .Values.service.backendPort }}
+        volumeMounts:
+          - name: secret-volume
+            readOnly: true
+            mountPath: "/etc/secret-volume"
+      volumes:
+      - name: secret-volume
+        secret:
+          secretName: secret-volume

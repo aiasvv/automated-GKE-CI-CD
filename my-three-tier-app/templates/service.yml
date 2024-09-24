@@ -1,0 +1,34 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ .Values.backend.name }}
+  ports:
+    - protocol: {{ .Values.backend.protocol }}
+      port: {{ .Values.backend.port }}
+      targetPort: {{ .Values.service.backendPort }}
+---
+
+{{- end }}
+
+
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ .Values.frontend.name }}
+  ports:
+    - protocol: {{ .Values.frontend.protocol }}
+      port: {{ .Values.frontend.port }}
+      targetPort: {{ .Values.service.frontendPort }}
+---
+
+{{- end }}

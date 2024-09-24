@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: prometheus
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    targetRevision: 62.6.0
+    chart: kube-prometheus-stack
+    helm:
+      parameters:
+        - name: prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues
+          value: "false"
+        - name: prometheus.prometheusSpec.serviceMonitorSelector.matchLabels.release
+          value: prometheus
+        - name: prometheus.service.type
+          value: LoadBalancer
+        - name: grafana.service.type
+          value: LoadBalancer
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

@@ -1,0 +1,23 @@
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  backendPort: 3000
+  frontendPort: 80
+
+ingress:
+  enabled: true
+
+backend:
+  name: awesome-cats-backend
+  enabled: true
+  image: gcr.io/aia-project-435110/awesome_cats_backend:latest
+  protocol: TCP
+  port: 3000
+
+frontend:
+  name: awesome-cats-frontend
+  enabled: true
+  image: gcr.io/aia-project-435110/awesome_cats_frontend:latest
+  protocol: TCP
+  port: 80

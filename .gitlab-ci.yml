@@ -1,0 +1,250 @@
+stages:
+  - terraform
+  - build
+  - deploy
+  - dns-zone
+  - setup
+
+variables:
+  TERRAFORM_DIR: "terraform"
+  PROJECT_ID: "aia-project-435110"
+  CLUSTER_NAME: "cluster"
+  CLUSTER_ZONE: "us-central1-c"
+  INSTANCE: "bastion"
+  GKE_INTERNAL_IP: "10.13.0.2"
+
+terraform:
+  image: google/cloud-sdk:latest
+  stage: terraform
+  before_script:
+  - apt-get update && apt-get install -y curl gnupg software-properties-common kubectl postgresql-client sshpass
+  - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+  
+  - curl -fsSL https://apt.releases.hashicorp.com/gpg | apt-key add -
+  - apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com $(lsb_release -cs) main"
+  - apt-get update && apt-get install -y terraform
+  
+  - echo "$GCLOUD_SERVICE_KEY" > /tmp/key.json
+  - export GOOGLE_APPLICATION_CREDENTIALS=/tmp/key.json
+
+  script:
+    - cd $TERRAFORM_DIR
+    - terraform init -reconfigure
+    - terraform plan --out=tfplan
+    - terraform apply -auto-approve tfplan #|| echo "Terraform apply failed" > /tmp/terraform_apply_failed #-var "credentials=/tmp/credentials.json"
+    - echo "Terraform resources created" > /builds/aia9313335/final_project/terraform_status.txt
+  artifacts:
+    paths:
+      - /builds/aia9313335/final_project/terraform_status.txt
+      # - /builds/aia9313335/final_project/kubeconfig
+      - tfplan
+    expire_in: 1 hour
+  when: manual
+
+terraform_destroy:
+  image: registry.gitlab.com/gitlab-org/terraform-images/releases/1.1:v1.8.0
+  stage: terraform
+  script:
+    - cd $TERRAFORM_DIR
+    - terraform destroy -auto-approve
+  when: manual
+
+.docker_rule:
+  image: docker:stable
+  services:
+  - name: docker:dind
+    alias: thedockerhost
+  
+  variables:
+    DOCKER_HOST: tcp://thedockerhost:2375/
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DIR_BACKEND: "docker/awesome_cats_backend"
+    DOCKER_DIR_FRONTEND: "docker/awesome_cats_frontend"
+    IMAGE_BACKEND: "gcr.io/${PROJECT_ID}/awesome_cats_backend:latest"
+    IMAGE_FRONTEND: "gcr.io/${PROJECT_ID}/awesome_cats_frontend:latest"
+
+  before_script:
+    - echo "$GCLOUD_SERVICE_KEY" > /tmp/key.json
+    - export GOOGLE_APPLICATION_CREDENTIALS=/tmp/key.json
+    - apk add --no-cache python3 py3-pip
+    - cat $GOOGLE_APPLICATION_CREDENTIALS | docker login -u _json_key --password-stdin https://gcr.io
+
+docker_backend:
+  stage: build
+  extends:
+    - .docker_rule
+  script:
+    - cd $DOCKER_DIR_BACKEND
+    - docker build -t $IMAGE_BACKEND .
+    - docker push $IMAGE_BACKEND
+    - docker images
+  when: manual
+
+docker_frontend:
+  stage: build
+  extends:
+    - .docker_rule
+  script:
+    - cd $DOCKER_DIR_FRONTEND
+    - docker build -t $IMAGE_FRONTEND .
+    - docker push $IMAGE_FRONTEND
+    - docker images
+  when: manual
+
+.connect-gke:
+  image:
+    name: google/cloud-sdk:latest
+    entrypoint:
+      - '/usr/bin/env'
+      - 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+  before_script:
+    - apt-get update && apt-get install -y curl gnupg software-properties-common kubectl postgresql-client sshpass
+    - curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    
+    - apt-get install -y python3-pip
+    - pip3 install numpy
+  
+    - echo "$GCLOUD_SERVICE_KEY" > /tmp/key.json
+    - export GOOGLE_APPLICATION_CREDENTIALS=/tmp/key.json
+    # - apt-get update && apt-get --only-upgrade install google-cloud-cli-kubectl-oidc google-cloud-cli-harbourbridge google-cloud-cli-enterprise-certificate-proxy google-cloud-cli-app-engine-python google-cloud-cli-istioctl google-cloud-cli-firestore-emulator google-cloud-cli-package-go-module google-cloud-cli-terraform-tools google-cloud-cli-docker-credential-gcr google-cloud-cli-pubsub-emulator google-cloud-cli-gke-gcloud-auth-plugin google-cloud-cli-anthos-auth google-cloud-cli-local-extract google-cloud-cli-config-connector kubectl google-cloud-cli-app-engine-python-extras google-cloud-cli google-cloud-cli-log-streaming google-cloud-cli-app-engine-go google-cloud-cli-skaffold google-cloud-cli-kpt google-cloud-cli-app-engine-grpc google-cloud-cli-datastore-emulator google-cloud-cli-app-engine-java google-cloud-cli-cloud-build-local google-cloud-cli-cloud-run-proxy google-cloud-cli-bigtable-emulator google-cloud-cli-spanner-migration-tool google-cloud-cli-nomos google-cloud-cli-spanner-emulator google-cloud-cli-minikube google-cloud-cli-cbt google-cloud-cli-anthoscli
+    - gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS
+  
+    - gcloud config set project $PROJECT_ID
+    - gcloud compute project-info add-metadata --metadata enable-oslogin=TRUE
+    # - gcloud compute ssh $INSTANCE --zone $CLUSTER_ZONE --project $PROJECT_ID --tunnel-through-iap -- -L 443:10.13.0.2:443 -N -q -f
+
+    - gcloud config set container/cluster $CLUSTER_NAME
+    - echo "Checking if GKE cluster exists..."
+    - gcloud container clusters describe $CLUSTER_NAME --zone $CLUSTER_ZONE --project $PROJECT_ID || { echo "Cluster does not exist or cannot be reached"; exit 1; }
+    
+  
+    - echo "Fetching cluster credentials..."
+    - gcloud container clusters get-credentials $CLUSTER_NAME --zone $CLUSTER_ZONE --verbosity=debug
+    # - kubectl config view --minify --flatten > /builds/aia9313335/final_project/kubeconfig
+    - echo "Checking Kubernetes cluster status..."
+    - kubectl cluster-info
+      
+      # Добавление репозиториев Helm
+    - helm repo add stable https://charts.helm.sh/stable
+    - helm repo add jetstack https://charts.jetstack.io
+    - helm repo add bitnami https://charts.bitnami.com/bitnami
+    - helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+    - helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    - helm repo update
+  # artifacts:
+  #   paths:
+      # - /builds/aia9313335/final_project/kubeconfig
+
+deploy:
+  extends: .connect-gke
+  stage: deploy
+  script:
+    - echo "Deploying Helm chart..."
+    - helm upgrade --install my-three-tier-app ./my-three-tier-app --values ./my-three-tier-app/values.yaml
+  when: manual
+
+nginx_ingress:
+  extends: .connect-gke
+  stage: dns-zone
+  script:
+    - kubectl create namespace ingress-nginx || true
+    - helm upgrade --install nginx-ingress ingress-nginx/ingress-nginx --namespace ingress-nginx --set controller.publishService.enabled=true --set controller.service.externalTrafficPolicy=Local
+  when: manual
+
+external_dns:
+  extends: .connect-gke
+  stage: dns-zone
+  script:
+    - kubectl create namespace external-dns
+    - kubectl create secret generic external-dns-gcp --from-file=credentials.json=/tmp/key.json -n external-dns
+    - helm upgrade --install external-dns bitnami/external-dns --namespace external-dns --set provider=google --set google.project=$PROJECT_ID --set google.serviceAccountSecret=external-dns-gcp --set txtOwnerId="api-aiasv-dev" --set policy=sync
+  when: manual
+
+cert_manager:
+  extends: .connect-gke
+  stage: dns-zone
+  script:
+    - kubectl create namespace cert-manager
+    - helm upgrade --install cert-manager jetstack/cert-manager --namespace cert-manager --set installCRDs=true
+    - kubectl apply -f ./dns/ingress.yml 
+    - kubectl apply -f ./dns/issuer.yml 
+    - kubectl apply -f ./dns/certificate.yml 
+    
+  when: manual
+
+db-secret:
+  extends: .connect-gke
+  stage: setup
+  script:
+    - kubectl create secret generic db-credentials --from-literal=PGPASSWORD="$DB_PASSWORD" --from-literal=PGUSER="$DB_USER" --from-literal=PGDATABASE="postgres" --from-literal=PGHOST="$DB_INSTANCE_IP"
+  when: manual
+
+db-table:
+  extends: .connect-gke
+  stage: setup
+  script:
+    - export PGPASSWORD="$DB_PASSWORD"
+    - psql -h $DB_INSTANCE_IP -p 5432 -U $DB_USER -d postgres -f table.sql
+  when: manual
+
+setup-prometheus:
+  extends: .connect-gke
+  stage: setup
+  script:
+    - kubectl create ns monitoring || true
+    - helm install prometheus prometheus-community/kube-prometheus-stack --namespace monitoring --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --set prometheus.prometheusSpec.serviceMonitorSelector.matchLabels.release=prometheus
+  when: manual
+
+setup-upgrade-prometheus:
+  extends: .connect-gke
+  stage: setup
+  script:
+    - helm install postgres-exporter prometheus-community/prometheus-postgres-exporter --namespace monitoring --set postgresUser=$DB_USER --set postgresPassword=$DB_PASSWORD --set postgresDatabase=postgres  --set postgresHost=$DB_INSTANCE_IP --set serviceMonitor.enabled=true --set serviceMonitor.selector.release=prometheus
+    - until kubectl get svc -n monitoring postgres-exporter-prometheus-postgres-exporter; do echo "Waiting for postgres-exporter-prometheus-postgres-exporter service..."; sleep 10; done
+    - export POSTGRES_EXPORTER_IP=$(kubectl get svc -n monitoring postgres-exporter-prometheus-postgres-exporter -o jsonpath='{.spec.clusterIP}')
+    - echo $POSTGRES_EXPORTER_IP > postgres_exporter_ip.txt
+    - helm install stackdriver-exporter prometheus-community/prometheus-stackdriver-exporter --namespace monitoring --set stackdriver.projectId=$PROJECT_ID
+    - helm upgrade prometheus prometheus-community/kube-prometheus-stack -f ./dop-yml/values.yml -n monitoring --set postgresExporterIp=$POSTGRES_EXPORTER_IP
+
+  artifacts:
+    paths:
+      - postgres_exporter_ip.txt
+  when: manual
+
+
+setup-argocd:
+  extends: .connect-gke
+  stage: setup
+  script:
+    - kubectl create ns argocd || true
+    - kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    # - kubectl -n argocd patch svc argocd-server --patch "$(cat dop-yml/loadbalancer-patch.yml)"
+    - curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+    - chmod +x /usr/local/bin/argocd
+    - kubectl apply -f ./monitoring/argocd.yml 
+
+    # # Ожидание развертывания ArgoCD
+    # - kubectl rollout status -n argocd deployment/argocd-server
+
+    # # Получение пароля администратора ArgoCD
+    # - ARGOCD_PASSWORD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 --decode)
+
+    # - kubectl rollout status -n argocd deployment/argocd-server
+
+    # # Получение IP-адреса ArgoCD сервера
+    # - ARGOCD_SERVER=$(kubectl -n argocd get svc argocd-server -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+    # - kubectl rollout status -n argocd deployment/argocd-server
+
+    # # Аутентификация в ArgoCD с использованием полученного IP-адреса
+    # - argocd login --server $ARGOCD_SERVER --username admin --password $ARGOCD_PASSWORD --insecure
+
+    # # Добавление репозитория GitLab
+    # - argocd repo add https://gitlab.com/final-k/cat.git --username $GITLAB_USERNAME --password $GITLAB_TOKEN
+
+    # Применение манифеста приложения
+    # - kubectl apply -f argocd.yml
+    # - kubectl apply -f prometheus.yml 
+  when: manual
